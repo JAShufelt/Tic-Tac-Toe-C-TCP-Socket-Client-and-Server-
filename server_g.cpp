@@ -1,33 +1,5 @@
-#include <iostream>
-#include <stdio.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <string.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <time.h>
+#include "tictactoe.h"
 
-#define BUFFERSIZE 1024
-typedef struct gameBoard
-{
-    int turn = 1; //1: Human Player's Turn 2: AI Player's Turn
-    int win = 0; //0: No winner 1: player won 2: AI won 3: draw
-    char boardState[10] = "         "; //boardState initialized as 10 spaces to represent all 9 board spaces and a null terminator.
-    int aiAvailSpaces[9] = {0,1,2,3,4,5,6,7,8}; //Array containing all of the indexes of board spaces that are available for the AI to choose
-    int aiAvailSpaceNum = 9;    //Number of options for the AI to choose from
-
-}gameBoard;
-
-void boardtoCharArray(char* charArray, gameBoard* game);
-
-void makeMove(gameBoard* game, char *user_input, int user_input_size, char *server_message, int server_message_size);
-
-void aiPly(gameBoard* game);
-
-int detectWin(gameBoard* game);
-
-void printTime();
 
 int main(int argc, char* argv[])
 {
@@ -35,14 +7,19 @@ int main(int argc, char* argv[])
     int sd; //Socket descriptor for communication with client
     int client_id;  //ClientId provided via CLA
     int game_over = 0;  //Variable to allow termination of gaming loop and process termination.
+    int pipe_write; //Write end of pipe to parent process
+    char writingBuff[BUFFERSIZE];   //Buffer for holding messages to be written to the pipe.
     int pid = getpid(); //Process ID
     char user_input[BUFFERSIZE];    //User input
     char server_message[BUFFERSIZE] = "Welcome to Tic-Tac-Toe!\nUse the following move guide to choose a move. Simply enter the number corresponding to your desired move. (You are \"X\")\n\n";
     char move_guide[BUFFERSIZE] = " 0 | 1 | 2 \n---|---|---\n 3 | 4 | 5 \n---|---|---\n 6 | 7 | 8 \n"; //Char[] for showing movement guide to player
     char boardRep[BUFFERSIZE];  //Char[] for storing character representation of the board.
 
+    //Interpret command line arguments
     sd = atoi(argv[1]); //Receive socket descriptor
     client_id = atoi(argv[2]);  //receive client_id
+    pipe_write = atoi(argv[3]); //receive writing pipe
+    snprintf(writingBuff,10,"%d",sd);
 
     //Communicate established connection
     printf("Child Process Spawned, PID:%d\n", pid);
@@ -75,16 +52,20 @@ int main(int argc, char* argv[])
         //If the game is over... (win detected)
         if(game.win != 0)
         {
+            //Contruct and send message asking user to replay.
             strcat(server_message, "\n\nWould you like to play again? Enter Y (yes) or N (no).");
             send(sd,server_message, sizeof(server_message), 0);
             fflush(stdout);
             printTime();
             printf("Message sent to ClientID %d\n\n", client_id);
 
+            //Receive user response.
             recv(sd, &user_input, sizeof(user_input), 0);
             fflush(stdout);
             printTime();
             printf("Message Received from ClientID %d\n\n", client_id);
+
+            //Determine input of user reponse
             if(strlen(user_input) > 0)
             {
                 gameBoard newGame;
@@ -93,6 +74,7 @@ int main(int argc, char* argv[])
                 {
                 case 'Y':
                 case 'y':
+                    //Cases in which user wants to play again, reset the board and print it
                     char temp[BUFFERSIZE];
                     boardtoCharArray((char *)&temp, &game);
                     strcpy(server_message, temp);
@@ -101,6 +83,7 @@ int main(int argc, char* argv[])
                 case 'N':
                 case 'n':
                 default:
+                    //Cases in which user does not want to play again, disconnect and signal break in play loop.
                     game_over = 1;
                     strcpy(server_message, "You have been disconnected from the server.");
                     break;
@@ -118,6 +101,7 @@ int main(int argc, char* argv[])
     //User has chosen to not play again, record normal termination.
     printTime();
     printf("PID: %d, Server_G Instance exiting normally.\n\n", pid);
+    write(pipe_write,writingBuff,sizeof(writingBuff));  //Send socket descriptor back to Server C for closing.
     close(sd);  //Close the socket descriptor
     return 0;
 }
@@ -185,20 +169,23 @@ void makeMove(gameBoard* game, char *user_input, int user_input_size, char *serv
     {
         int index = (user_input[0] - 48);    //Convert ASCII number to integer equivalent.
 
-        //If desired move is available
+        //If desired move is available...
         if(game->boardState[index] == ' ')
         {
             game->boardState[index] = 'X';   //Place X in desired spot
             game->aiAvailSpaces[index] = ' ';   //Remove the desired space from the AI's available spaces via replacing its index with a space
-            game->aiAvailSpaceNum--; //Deduct the number of available spaces
+            game->aiAvailSpaceNum--; //Decrement the number of available spaces
 
             win_status = detectWin(game);   //Detect win after player move.
 
+            //If no win is detected...
             if(win_status == 0)
             {
-                //No win detected after player move, AI should make a move.
+                //No win detected after player move, AI will make a move.
                 aiPly(game);
                 win_status = detectWin(game);
+
+                //If the AI has won...
                 if(win_status == 2)
                 {
                     //AI player has won.
@@ -208,6 +195,7 @@ void makeMove(gameBoard* game, char *user_input, int user_input_size, char *serv
                     strcat(server_message, "\n");
                     strcat(server_message, "AI Player has won. You Lose!");
                 }
+                //No win detected after AI move...
                 else
                 {
                     //No Win detected after AI move, Return the board.
@@ -217,6 +205,7 @@ void makeMove(gameBoard* game, char *user_input, int user_input_size, char *serv
                     strcat(server_message, "\n");
                 }
             }
+            //If player one has won...
             else if(win_status == 1)
             {
                 //Player one has won.
@@ -226,6 +215,7 @@ void makeMove(gameBoard* game, char *user_input, int user_input_size, char *serv
                 strcat(server_message, "\n");
                 strcat(server_message, "You have won.");
             }
+            //If there has been a tie...
             else if(win_status == 3)
             {
                 //There is no more moves to be made, a catscratch.
@@ -236,9 +226,10 @@ void makeMove(gameBoard* game, char *user_input, int user_input_size, char *serv
                 strcat(server_message, "There is no more moves, game ended in a tie.");
             }
         }
+        //User provided valid input, but the desired spot was already taken previously.
         else
         {
-            valid = 0;  //User provided valid input, but the desired spot was already taken previously.
+            valid = 0;
         }
 
         //If player successfully made a move
@@ -247,6 +238,7 @@ void makeMove(gameBoard* game, char *user_input, int user_input_size, char *serv
             strcpy(server_message, "The desired position has already been taken.\n");
         }
     }
+    //User entered invalid input
     else
     {
         strcpy(server_message, "The entered input is invalid. Please enter a number between 0 and 8.\n");
@@ -386,15 +378,11 @@ void aiPly(gameBoard* game)
         j++;
     }
 
-    game->boardState[j] = 'O';  //Mark move with AI's O gamepiece
+    game->boardState[j] = 'O';  //Mark move with AI's "O" game piece
     game->aiAvailSpaces[j] = ' ';   //Mark the chosen space as taken
     game->aiAvailSpaceNum--;    //Decrement number of available spaces
 
 }
 
-void printTime()
-{
-    time_t current_time = time(NULL);
-    printf("Action Documented: %s", ctime(&current_time));
-}
+
 
